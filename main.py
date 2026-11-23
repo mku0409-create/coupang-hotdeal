@@ -40,7 +40,8 @@ def send_telegram(text):
 
 def extract_coupang_url(page, detail_url):
     try:
-        page.goto(detail_url, wait_until="networkidle", timeout=15000)
+        page.goto(detail_url, wait_until="domcontentloaded", timeout=15000)
+        page.wait_for_timeout(2000)
         links = page.locator("a[href*='coupang.com']").all()
         for link in links:
             href = link.get_attribute("href")
@@ -54,31 +55,49 @@ def extract_coupang_url(page, detail_url):
 def main():
     sent_urls = load_history()
     new_sent = list(sent_urls)
+    debug_info = []
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            locale="ko-KR",
         )
         page = context.new_page()
 
         candidates = []
 
         for category, url in TARGETS:
-            page.goto(url, wait_until="networkidle", timeout=20000)
-            page.wait_for_timeout(2000)
+            page.goto(url, wait_until="domcontentloaded", timeout=25000)
+            page.wait_for_timeout(4000)
+            page.mouse.wheel(0, 1000)
+            page.wait_for_timeout(1500)
 
-            anchors = page.locator("a[href^='/']").all()
+            anchors = page.locator("a").all()
+            body_sample = re.sub(r"\s+", " ", page.inner_text("body") or "")[:120]
+            debug_info.append(f"[{category}] 링크수:{len(anchors)} / 화면:{body_sample}")
+
             for a in anchors:
                 href = a.get_attribute("href") or ""
                 text = (a.inner_text() or "").strip()
+                html = (a.inner_html() or "").lower()
 
-                if not text or "쿠팡" not in text:
+                if not href or not text:
+                    continue
+
+                clean_href = href.replace("https://hotdeal.zip", "")
+                if clean_href in ["", "/", "/식품", "/생활용품", "/인기", "/쿠팡최저가", "/%EC%8B%9D%ED%92%88", "/%EC%83%9D%ED%99%9C%EC%9A%A9%ED%92%88"]:
                     continue
                 if any(skip in href for skip in ["/search", "/login", "/notice", "/terms", "/privacy"]):
                     continue
+                if href.startswith("http") and "hotdeal.zip" not in href:
+                    continue
 
-                full_detail_url = f"https://hotdeal.zip{href}"
+                # 글자뿐만 아니라 쿠팡 아이콘 이미지(alt, src)까지 모두 감지
+                if ("쿠팡" not in text) and ("쿠팡" not in html) and ("coupang" not in html):
+                    continue
+
+                full_detail_url = href if href.startswith("http") else f"https://hotdeal.zip{href if href.startswith('/') else '/' + href}"
                 if full_detail_url in new_sent:
                     continue
 
@@ -90,11 +109,18 @@ def main():
                 candidates.append((category, title, price, full_detail_url))
                 new_sent.append(full_detail_url)
 
-        for category, title, price, detail_url in reversed(candidates):
-            origin_url = extract_coupang_url(page, detail_url)
-            message = f"[{category}] {title}\n가격: {price}\n{origin_url}"
-            send_telegram(message)
-            time.sleep(1)
+        if candidates:
+            for category, title, price, detail_url in reversed(candidates):
+                origin_url = extract_coupang_url(page, detail_url)
+                message = f"[{category}] {title}\n가격: {price}\n{origin_url}"
+                send_telegram(message)
+                time.sleep(1)
+        elif len(sent_urls) == 0:
+            diag_msg = (
+                "✅ 텔레그램 연결은 정상입니다! (현재 감지된 신규 쿠팡 글 0건)\n\n"
+                + "\n".join(debug_info)
+            )
+            send_telegram(diag_msg)
 
         browser.close()
 
