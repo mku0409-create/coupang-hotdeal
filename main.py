@@ -38,10 +38,20 @@ def send_telegram(text):
     res.raise_for_status()
 
 
+def wait_for_cloudflare(page):
+    # 클라우드플레어 자동 보안 검사가 끝날 때까지 최대 15초 대기
+    for _ in range(5):
+        body = page.inner_text("body") or ""
+        if "보안 확인 수행 중" not in body and "Checking your browser" not in body:
+            break
+        page.wait_for_timeout(3000)
+
+
 def extract_coupang_url(page, detail_url):
     try:
-        page.goto(detail_url, wait_until="domcontentloaded", timeout=15000)
-        page.wait_for_timeout(2000)
+        page.goto(detail_url, wait_until="domcontentloaded", timeout=20000)
+        wait_for_cloudflare(page)
+        page.wait_for_timeout(1500)
         links = page.locator("a[href*='coupang.com']").all()
         for link in links:
             href = link.get_attribute("href")
@@ -58,10 +68,24 @@ def main():
     debug_info = []
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        # 일반 크롬처럼 보이도록 최신 헤드리스 모드 및 자동화 숨김 옵션 적용
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--headless=new",
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+            ],
+        )
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
             locale="ko-KR",
+            timezone_id="Asia/Seoul",
+            viewport={"width": 1280, "height": 800},
+        )
+        # 브라우저 내부의 자동화 로봇(webdriver) 표식 제거
+        context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
         )
         page = context.new_page()
 
@@ -69,7 +93,8 @@ def main():
 
         for category, url in TARGETS:
             page.goto(url, wait_until="domcontentloaded", timeout=25000)
-            page.wait_for_timeout(4000)
+            wait_for_cloudflare(page)
+            page.wait_for_timeout(2500)
             page.mouse.wheel(0, 1000)
             page.wait_for_timeout(1500)
 
@@ -93,7 +118,6 @@ def main():
                 if href.startswith("http") and "hotdeal.zip" not in href:
                     continue
 
-                # 글자뿐만 아니라 쿠팡 아이콘 이미지(alt, src)까지 모두 감지
                 if ("쿠팡" not in text) and ("쿠팡" not in html) and ("coupang" not in html):
                     continue
 
@@ -117,7 +141,7 @@ def main():
                 time.sleep(1)
         elif len(sent_urls) == 0:
             diag_msg = (
-                "✅ 텔레그램 연결은 정상입니다! (현재 감지된 신규 쿠팡 글 0건)\n\n"
+                "⚠️ 해외 서버 IP라 클라우드플레어 보안 확인을 아직 통과하지 못했습니다.\n\n"
                 + "\n".join(debug_info)
             )
             send_telegram(diag_msg)
